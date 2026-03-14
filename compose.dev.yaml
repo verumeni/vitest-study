@@ -1,0 +1,64 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+    # 環境変数を展開 シェル環境変数もしくは.envから定義を取得 :-はどちらも定義がない場合のデフォルト値
+      POSTGRES_USER: ${POSTGRES_USER:-appuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-apppass}
+      POSTGRES_DB: ${POSTGRES_DB:-appdb}
+    ports:
+      - "5432:5432"
+    healthcheck: # condition で定義されたservice_healthyが関連
+    # シェルを介して実行（CMDの場合はシェルを介さず実行、その場合はコマンドと引数を,区切りで記述。この書き方はこの項目専用の書き方）
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-appuser} -d ${POSTGRES_DB:-appdb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  app:
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
+    init: true
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-appuser}:${POSTGRES_PASSWORD:-apppass}@db:5432/${POSTGRES_DB:-appdb}?schema=public
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./:/app
+      - /app/node_modules
+    # シェル構文 シェル不要な場合は配列
+    command: > # > 改行を含めない, シェル実行 node_modulesが存在しなければ npm ciを実行、そうでなければスキップ; 最終的に npm run devを実行
+      sh -lc "if [ ! -d node_modules ]; then npm ci; fi; npm run dev"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  e2e:
+    image: mcr.microsoft.com/playwright:v1.58.2-noble
+    profiles: ["e2e"] # upでは起動せず --profile e2e を付けた時だけ起動, 配列で指定可能でいずれかを指定して実行すれば対象となる
+    init: true # PID 1のプロセスをTiniで実行
+    working_dir: /work
+    depends_on:
+      db:
+        condition: service_healthy
+      app:
+        condition: service_healthy
+    environment:
+      BASE_URL: http://app:3000
+      CI: "true"
+    volumes:
+      - ./:/work
+    command: sh -lc "npm ci && npx playwright test"
+
+# 名前付きボリューム （ホストPCとは別でDocker管理）
+volumes:
+  pgdata:
